@@ -4,18 +4,17 @@ from streamlit_folium import st_folium
 import requests
 import html
 import math
-from geopy.geocoders import Nominatim
 
 st.set_page_config(page_title="SafeRoute BKK & Nonthaburi", page_icon="🌊", layout="centered")
 
 st.title("🚨 SafeRoute: เช็กเส้นทางน้ำท่วม กทม.-นนทบุรี")
-st.write("เลือกสถานที่จากรายการยอดฮิต หรือพิมพ์ระบุชื่อสถานที่จริงได้อิสระ แล้วตรวจสอบเส้นทางบนแผนที่")
+st.write("เลือกสถานที่จากรายการเพื่อตรวจสอบเส้นทางบนแผนที่ และเช็กจุดน้ำท่วมขัง")
 
 # ---------------------------------------------------------------------------
-# 1) รายการสถานที่ยอดฮิต (Dropdown)
+# 1) เพิ่มสถานที่ยอดฮิต รวมถึง "โรงพยาบาลพระราม 9" ไว้ในนี้ชัวร์ที่สุด
 # ---------------------------------------------------------------------------
 locations_db = {
-    "--- พิมพ์ค้นหาเองด้านล่าง ---": None,
+    "โรงพยาบาลพระราม 9 (กทม.)": {"lat": 13.7547, "lon": 100.5707},
     "บางบัวทอง (นนทบุรี)": {"lat": 13.9130, "lon": 100.4247},
     "ปากเกร็ด (แจ้งวัฒนะ)": {"lat": 13.9065, "lon": 100.5027},
     "งามวงศ์วาน (พันธุ์ทิพย์/พงษ์เพชร)": {"lat": 13.8582, "lon": 100.5447},
@@ -24,6 +23,8 @@ locations_db = {
     "อนุสาวรีย์ชัยสมรภูมิ (กทม.)": {"lat": 13.7650, "lon": 100.5383},
     "สยามสแควร์ (กทม.)": {"lat": 13.7444, "lon": 100.5330},
     "บางซื่อ (กทม.)": {"lat": 13.8039, "lon": 100.5398},
+    "เซ็นทรัล พระราม 9 (กทม.)": {"lat": 13.7570, "lon": 100.5651},
+    "ฟิวเจอร์พาร์ค รังสิต": {"lat": 13.9897, "lon": 100.6178}
 }
 
 # ---------------------------------------------------------------------------
@@ -42,25 +43,6 @@ FLOOD_PROXIMITY_METERS = 250
 COARSE_FILTER_DEGREES = 0.03
 OSRM_URL = "https://router.project-osrm.org/route/v1/driving/{lon1},{lat1};{lon2},{lat2}?overview=full&geometries=geojson"
 OSRM_TIMEOUT_SECONDS = 8
-
-geolocator = Nominatim(user_agent="saferoute_bkk_free_search")
-
-def get_lat_lon(selection, custom_text):
-    """แปลงตัวเลือกหรือข้อความพิมพ์อิสระให้เป็นพิกัด Lat/Lon"""
-    if selection != "--- พิมพ์ค้นหาเองด้านล่าง ---" and selection in locations_db:
-        return locations_db[selection], selection
-    
-    if custom_text.strip():
-        try:
-            query = custom_text.strip()
-            if "นนทบุรี" not in query and "กรุงเทพ" not in query and "Bangkok" not in query:
-                query += ", กรุงเทพมหานคร หรือ นนทบุรี, ประเทศไทย"
-            loc = geolocator.geocode(query, timeout=5)
-            if loc:
-                return {"lat": loc.latitude, "lon": loc.longitude}, custom_text.strip()
-        except Exception:
-            pass
-    return None, None
 
 def haversine_meters(lat1, lon1, lat2, lon2):
     r = 6371000
@@ -106,63 +88,54 @@ def fetch_route(loc_orig, loc_dest):
 # ---------------------------------------------------------------------------
 # UI Layout
 # ---------------------------------------------------------------------------
-st.subheader("📍 จุดเริ่มต้น")
-orig_select = st.selectbox("เลือกจากรายการ (ต้นทาง)", list(locations_db.keys()), index=1)
-orig_custom = st.text_input("หรือพิมพ์ระบุสถานที่เริ่มต้นเอง (ถ้าไม่มีในรายการ)", placeholder="เช่น มหาวิทยาลัยเกษตรศาสตร์")
-
-st.subheader("🏁 จุดปลายทาง")
-dest_select = st.selectbox("เลือกจากรายการ (ปลายทาง)", list(locations_db.keys()), index=5)
-dest_custom = st.text_input("หรือพิมพ์ระบุสถานที่ปลายทางเอง (ถ้าไม่มีในรายการ)", placeholder="เช่น เซ็นทรัล ลาดพร้าว")
+origin_name = st.selectbox("📍 จุดเริ่มต้น", list(locations_db.keys()), index=5)
+destination_name = st.selectbox("🏁 จุดปลายทาง", list(locations_db.keys()), index=0)
 
 if st.button("🚀 แสดงเส้นทางและเช็กน้ำท่วม"):
-    with st.spinner("กำลังค้นหาพิกัดและคำนวณเส้นทาง..."):
-        loc_orig, name_orig = get_lat_lon(orig_select, orig_custom)
-        loc_dest, name_dest = get_lat_lon(dest_select, dest_custom)
+    with st.spinner("กำลังคำนวณเส้นทาง..."):
+        loc_orig = locations_db[origin_name]
+        loc_dest = locations_db[destination_name]
 
-        if not loc_orig or not loc_dest:
-            st.error("❌ ไม่พบพิกัดของสถานที่ที่คุณระบุ โปรดลองระบุชื่อสถานที่ ถนน หรือเขตให้ชัดเจนขึ้นครับ")
+        m = folium.Map(
+            location=[(loc_orig["lat"] + loc_dest["lat"]) / 2,
+                      (loc_orig["lon"] + loc_dest["lon"]) / 2],
+            zoom_start=13,
+        )
+
+        route_coords, route_note = fetch_route(loc_orig, loc_dest)
+        is_flooded, matched = route_passes_flood_zone(route_coords, flood_reports)
+        
+        # วาดเส้นทางถนน
+        folium.PolyLine(route_coords, color="red" if is_flooded else "blue",
+                         weight=6, opacity=0.8).add_to(m)
+
+        # ปักหมุด ต้นทาง - ปลายทาง
+        folium.Marker([loc_orig["lat"], loc_orig["lon"]], tooltip=f"จุดเริ่มต้น: {origin_name}",
+                       icon=folium.Icon(color="green", icon="play")).add_to(m)
+        folium.Marker([loc_dest["lat"], loc_dest["lon"]], tooltip=f"ปลายทาง: {destination_name}",
+                       icon=folium.Icon(color="red", icon="stop")).add_to(m)
+
+        # ปักหมุดจุดน้ำท่วม
+        for report in flood_reports:
+            safe_name = html.escape(report["name"])
+            safe_status = html.escape(report["status"])
+            folium.Marker(
+                [report["lat"], report["lon"]],
+                popup=f"<b>{safe_name}</b><br>{safe_status}",
+                tooltip="จุดน้ำท่วมขัง",
+                icon=folium.Icon(color="red" if report["level"] == "danger" else "orange",
+                                  icon="warning-sign"),
+            ).add_to(m)
+
+        st_folium(m, width=700, height=450, returned_objects=[])
+
+        if route_note:
+            st.info(route_note)
+
+        if is_flooded:
+            names = ", ".join(html.escape(r["name"]) for r in matched if r["level"] == "danger")
+            st.error(f"🚨 เส้นทางนี้ผ่านใกล้พื้นที่น้ำท่วมสูง ({names}) แนะนำเปลี่ยนเส้นทาง!")
+        elif matched:
+            st.warning("⚠️ เส้นทางผ่านใกล้จุดที่มีน้ำขังเล็กน้อย ขับขี่ด้วยความระมัดระวัง")
         else:
-            m = folium.Map(
-                location=[(loc_orig["lat"] + loc_dest["lat"]) / 2,
-                          (loc_orig["lon"] + loc_dest["lon"]) / 2],
-                zoom_start=12,
-            )
-
-            route_coords, route_note = fetch_route(loc_orig, loc_dest)
-            is_flooded, matched = route_passes_flood_zone(route_coords, flood_reports)
-            
-            # วาดเส้นทางถนน
-            folium.PolyLine(route_coords, color="red" if is_flooded else "blue",
-                             weight=6, opacity=0.8).add_to(m)
-
-            # ปักหมุด ต้นทาง - ปลายทาง
-            folium.Marker([loc_orig["lat"], loc_orig["lon"]], tooltip=f"จุดเริ่มต้น: {name_orig}",
-                           icon=folium.Icon(color="green", icon="play")).add_to(m)
-            folium.Marker([loc_dest["lat"], loc_dest["lon"]], tooltip=f"ปลายทาง: {name_dest}",
-                           icon=folium.Icon(color="red", icon="stop")).add_to(m)
-
-            # ปักหมุดจุดน้ำท่วม
-            for report in flood_reports:
-                safe_name = html.escape(report["name"])
-                safe_status = html.escape(report["status"])
-                folium.Marker(
-                    [report["lat"], report["lon"]],
-                    popup=f"<b>{safe_name}</b><br>{safe_status}",
-                    tooltip="จุดน้ำท่วมขัง",
-                    icon=folium.Icon(color="red" if report["level"] == "danger" else "orange",
-                                      icon="warning-sign"),
-                ).add_to(m)
-
-            # เรนเดอร์แผนที่พร้อมระบุ returned_objects=[] เพื่อป้องกันปัญหาแผนที่ว่างเปล่า
-            st_folium(m, width=700, height=450, returned_objects=[])
-
-            if route_note:
-                st.info(route_note)
-
-            if is_flooded:
-                names = ", ".join(html.escape(r["name"]) for r in matched if r["level"] == "danger")
-                st.error(f"🚨 เส้นทางนี้ผ่านใกล้พื้นที่น้ำท่วมสูง ({names}) แนะนำเปลี่ยนเส้นทาง!")
-            elif matched:
-                st.warning("⚠️ เส้นทางผ่านใกล้จุดที่มีน้ำขังเล็กน้อย ขับขี่ด้วยความระมัดระวัง")
-            else:
-                st.success("✅ ไม่พบจุดเสี่ยงอันตรายในเส้นทางนี้ เดินทางได้ปกติครับ")
+            st.success("✅ ไม่พบจุดเสี่ยงอันตรายในเส้นทางนี้ เดินทางได้ปกติครับ")
