@@ -6,13 +6,28 @@ import html
 import math
 from geopy.geocoders import Nominatim
 
-st.set_page_config(page_title="SafeRoute Interactive Flood Map", page_icon="🌊", layout="centered")
+st.set_page_config(page_title="SafeRoute & Floodboard Link", page_icon="🌊", layout="centered")
 
-st.title("🚨 SafeRoute: เช็กเส้นทางน้ำท่วม & รายงานสด")
-st.write("ตรวจสอบเส้นทางและช่วยกันอัปเดตสถานการณ์น้ำท่วมแบบเรียลไทม์จากหน้างานจริง")
+st.title("🚨 SafeRoute: เช็กเส้นทางน้ำท่วม กทม.-นนทบุรี")
+st.write("ตรวจสอบเส้นทางหลีกเลี่ยงน้ำท่วม และสามารถกดดู Dashboard สถานการณ์จริงเพิ่มเติมได้ที่นี่")
 
 # ---------------------------------------------------------------------------
-# ระบบเก็บข้อมูลจุดน้ำท่วมใน Session (อัปเดตสดทันทีเมื่อมีคนแจ้งหรือกดยืนยันน้ำแห้ง)
+# เพิ่มลิงก์ปุ่มกดไปดู Dashboard ภายนอก
+# ---------------------------------------------------------------------------
+st.markdown(
+    """
+    <div style="background-color: #e8f4fd; padding: 10px 15px; border-radius: 8px; margin-bottom: 20px; border-left: 5px solid #1e88e5;">
+        <span>🌐 ต้องการเช็กภาพรวมสถานการณ์แบบละเอียด? </span>
+        <a href="https://floodboard.org/#map" target="_blank" style="font-weight: bold; color: #1565c0; text-decoration: none;">
+            👉 คลิกเพื่อเปิดดู Floodboard Dashboard ↗
+        </a>
+    </div>
+    """,
+    unsafe_allow_html=True
+)
+
+# ---------------------------------------------------------------------------
+# ระบบเก็บข้อมูลจุดน้ำท่วมใน Session (รายงานสดกันเองในแอป)
 # ---------------------------------------------------------------------------
 if "flood_reports" not in st.session_state:
     st.session_state.flood_reports = [
@@ -28,7 +43,7 @@ FLOOD_PROXIMITY_METERS = 250
 COARSE_FILTER_DEGREES = 0.03
 OSRM_URL = "https://router.project-osrm.org/route/v1/driving/{lon1},{lat1};{lon2},{lat2}?overview=full&geometries=geojson"
 
-geolocator = Nominatim(user_agent="saferoute_crowdsource_app")
+geolocator = Nominatim(user_agent="saferoute_dashboard_link_app")
 
 def get_lat_lon_free(place_name):
     if not place_name.strip():
@@ -94,7 +109,7 @@ def fetch_route(loc_orig, loc_dest):
     return [[c[1], c[0]] for c in coords], None
 
 # ---------------------------------------------------------------------------
-# แบ่งหน้าการใช้งาน (Tabs)
+# Tabs การใช้งานหลัก
 # ---------------------------------------------------------------------------
 tab1, tab2 = st.tabs(["🗺️ เช็กเส้นทาง & แผนที่", "📢 รายงานน้ำท่วม / กดยืนยันน้ำแห้ง"])
 
@@ -135,7 +150,7 @@ with tab1:
                     folium.Marker([loc_dest["lat"], loc_dest["lon"]], tooltip=f"ปลายทาง: {destination_input}",
                                    icon=folium.Icon(color="red", icon="stop")).add_to(m)
 
-                    # ปักหมุดจุดน้ำท่วมทั้งหมดที่มีอยู่ในระบบปัจจุบัน
+                    # ปักหมุดจุดน้ำท่วม
                     for report in st.session_state.flood_reports:
                         safe_name = html.escape(report["name"])
                         safe_status = html.escape(report["status"])
@@ -162,9 +177,6 @@ with tab1:
 
 with tab2:
     st.subheader("📢 รายงานสถานการณ์ หรือแจ้งว่าน้ำแห้งแล้ว")
-    st.write("ช่วยกันอัปเดตข้อมูลเพื่อให้เพื่อนร่วมทางได้รับข้อมูลที่ถูกต้องที่สุด")
-
-    # ส่วนที่ 1: แจ้งจุดน้ำท่วมใหม่
     with st.form("report_form"):
         st.markdown("##### 📍 เพิ่มจุดน้ำท่วมใหม่")
         new_loc = st.text_input("ชื่อสถานที่ / ถนน / ซอย", placeholder="เช่น ซอยงามวงศ์วาน 18")
@@ -186,7 +198,7 @@ with tab2:
                         "status": new_status,
                         "level": level_key
                     })
-                    st.success("🎉 ขอบคุณครับ! เพิ่มหมุดเตือนภัยลงในแผนที่เรียบร้อยแล้ว")
+                    st.success("🎉 เพิ่มหมุดเตือนภัยลงในแผนที่เรียบร้อยแล้ว")
                 else:
                     st.error("❌ ไม่พบพิกัดของสถานที่นี้ โปรดระบุชื่อถนนหรือเขตให้ชัดเจนขึ้นครับ")
             else:
@@ -206,3 +218,4 @@ with tab2:
                     st.session_state.flood_reports = [r for r in st.session_state.flood_reports if r["id"] != report["id"]]
                     st.success(f"ลบหมุด '{report['name']}' ออกจากแผนที่เรียบร้อยครับ!")
                     st.rerun()
+                    
