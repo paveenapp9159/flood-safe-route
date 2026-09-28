@@ -4,35 +4,74 @@ from streamlit_folium import st_folium
 import requests
 import html
 import math
+import pandas as pd
 from geopy.geocoders import Nominatim
 import streamlit.components.v1 as components
 
 st.set_page_config(page_title="SafeRoute & Floodboard", page_icon="🌊", layout="centered")
 
 st.title("🚨 SafeRoute: เช็กเส้นทางเลี่ยงน้ำท่วม กทม.")
-st.write("ระบบตรวจสอบเส้นทางอัจฉริยะ พร้อมระบบแนะนำเส้นทางเลี่ยงน้ำท่วมขัง")
+st.write("ระบบตรวจสอบเส้นทางอัจฉริยะ พร้อมระบบดึงข้อมูลน้ำท่วมสดและระบบสำรองกันพัง")
 
 # ---------------------------------------------------------------------------
-# ฐานข้อมูลจุดน้ำท่วมจริง (ครอบคลุมเส้นทางหลัก เช่น งามวงศ์วาน, พหลโยธิน ฯลฯ)
+# ฐานข้อมูลสำรอง (Fallback) ป้องกันกรณีลิงก์ Google Sheets มีปัญหา
 # ---------------------------------------------------------------------------
-stable_flood_reports = [
-    {"name": "ถนนงามวงศ์วาน (หลักสี่/นนทบุรี)", "lat": 13.8582, "lon": 100.5447, "status": "ท่วมขัง ~33 ซม. (รถเล็กโปรดระมัดระวัง)", "level": "danger"},
-    {"name": "ถนนพหลโยธิน (จตุจักร/ดอนเมือง)", "lat": 13.8250, "lon": 100.5740, "status": "ท่วมขัง ~80 ซม. (ผ่านไม่ได้)", "level": "danger"},
-    {"name": "ถนนรามคำแหง (บางกะปิ)", "lat": 13.7580, "lon": 100.6200, "status": "ท่วมขัง ~60 ซม.", "level": "danger"},
-    {"name": "ถนนพัฒนาการ (สวนหลวง)", "lat": 13.7315, "lon": 100.6120, "status": "ท่วมขัง ~80 ซม.", "level": "danger"},
-    {"name": "ถนนนวมินทร์ (บางกะปิ)", "lat": 13.7850, "lon": 100.6500, "status": "ท่วมขัง ~80 ซม.", "level": "danger"},
-    {"name": "ถนนลาดพร้าว (บางกะปิ)", "lat": 13.7800, "lon": 100.6000, "status": "ท่วมขัง ~30 ซม.", "level": "warning"},
-    {"name": "ถนนศรีนครินทร์ (สวนหลวง)", "lat": 13.7450, "lon": 100.6420, "status": "ท่วมขัง ~47 ซม.", "level": "danger"},
+fallback_flood_reports = [
+    {"name": "ถนนงามวงศ์วาน (หลักสี่/นนทบุรี)", "lat": 13.8582, "lon": 100.5447, "status": "ท่วมขัง ~31 ซม.", "level": "warning"},
+    {"name": "ถนนนวมินทร์ (บางกะปิ)", "lat": 13.7850, "lon": 100.6500, "status": "ท่วมขัง ~80 ซม. (อันตราย)", "level": "danger"},
+    {"name": "ถนนพัฒนาการ (ประเวศ)", "lat": 13.7315, "lon": 100.6120, "status": "ท่วมขัง ~50 ซม.", "level": "danger"},
+    {"name": "ถนนศรีนครินทร์ (บางนา)", "lat": 13.7450, "lon": 100.6420, "status": "ท่วมขัง ~80 ซม.", "level": "danger"},
+    {"name": "ถนนรามคำแหง (สวนหลวง)", "lat": 13.7580, "lon": 100.6200, "status": "ท่วมขัง ~100 ซม. (ผ่านไม่ได้)", "level": "danger"},
+    {"name": "ถนนพหลโยธิน (ดอนเมือง)", "lat": 13.8800, "lon": 100.6000, "status": "ท่วมขัง ~80 ซม.", "level": "danger"},
 ]
 
-if "flood_reports" not in st.session_state:
-    st.session_state.flood_reports = stable_flood_reports
+# ลิงก์ Google Sheets CSV ของคุณ (สามารถเปลี่ยนลิงก์ได้ตลอดเวลา)
+GOOGLE_SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/1emYaPZT-L-zWOq5Oezr_ZPURy-LTlnzLAPA7HaUjOug/export?format=csv"
 
-FLOOD_PROXIMITY_METERS = 800  # ขยายรัศมีตรวจจับให้กว้างขึ้น ครอบคลุมถนนเส้นใหญ่
+@st.cache_data(ttl=30)
+def load_flood_data_safe(url):
+    try:
+        df = pd.read_csv(url)
+        reports = []
+        for index, row in df.iterrows():
+            road_name = str(row.iloc[0]).strip()
+            if "ถนน" not in road_name and "ซอย" not in road_name:
+                continue
+            district = str(row.iloc[1]).strip() if len(row) > 1 else ""
+            depth = str(row.iloc[3]).strip() if len(row) > 3 else "ไม่ระบุ"
+            
+            # แปลงระดับความอันตรายตามความลึก (ถ้าเกิน 50 ซม. ถือว่าอันตราย)
+            is_danger = any(x in depth for x in ["50", "60", "70", "80", "90", "100", "110", "140"])
+            level = "danger" if is_danger else "warning"
+            
+            # อ่านพิกัด ถ้าในชีตมีคอลัมน์ lat/lon ให้ดึงมาใช้ ถ้าไม่มีใช้ค่ากลางสำรอง
+            lat = float(row.iloc[5]) if len(row) > 5 and pd.notna(row.iloc[5]) else 13.7563
+            lon = float(row.iloc[6]) if len(row) > 6 and pd.notna(row.iloc[6]) else 100.5018
+
+            reports.append({
+                "name": f"{road_name} ({district})",
+                "lat": lat,
+                "lon": lon,
+                "status": f"ท่วมขัง {depth}",
+                "level": level
+            })
+        
+        # ถ้าดึงมาแล้วว่างเปล่า ให้ใช้ชุดสำรอง
+        if not reports:
+            return fallback_flood_reports
+        return reports
+    except Exception:
+        # หากเกิดข้อผิดพลาดใดๆ ใช้ชุดสำรองทันที แอปไม่พังแน่นอน
+        return fallback_flood_reports
+
+# โหลดข้อมูล (พยายามดึงจาก Sheets ก่อน ถ้าไม่ได้ใช้ตัวสำรอง)
+flood_reports = load_flood_data_safe(GOOGLE_SHEET_CSV_URL)
+
+FLOOD_PROXIMITY_METERS = 800  
 COARSE_FILTER_DEGREES = 0.08
 OSRM_URL = "https://router.project-osrm.org/route/v1/driving/{lon1},{lat1};{lon2},{lat2}?overview=full&geometries=geojson"
 
-geolocator = Nominatim(user_agent="saferoute_complete_app")
+geolocator = Nominatim(user_agent="saferoute_safe_sync_app")
 
 def get_lat_lon_free(place_name):
     if not place_name.strip():
@@ -121,15 +160,14 @@ with tab1:
 
                 m = folium.Map(location=[center_lat, center_lon], zoom_start=13)
 
-                is_flooded, matched = route_passes_flood_zone(route_coords, st.session_state.flood_reports)
+                is_flooded, matched = route_passes_flood_zone(route_coords, flood_reports)
 
-                # วาดเส้นทาง (สีแดงถ้าผ่านจุดท่วม, สีน้ำเงินถ้าปลอดภัย)
                 folium.PolyLine(route_coords, color="red" if is_flooded else "blue", weight=6, opacity=0.8).add_to(m)
                 
                 folium.Marker([loc_orig["lat"], loc_orig["lon"]], tooltip="จุดเริ่มต้น", icon=folium.Icon(color="green", icon="play")).add_to(m)
                 folium.Marker([loc_dest["lat"], loc_dest["lon"]], tooltip="ปลายทาง", icon=folium.Icon(color="red", icon="stop")).add_to(m)
 
-                for report in st.session_state.flood_reports:
+                for report in flood_reports:
                     folium.Marker(
                         [report["lat"], report["lon"]],
                         popup=f"<b>{html.escape(report['name'])}</b><br>{html.escape(report['status'])}",
@@ -144,7 +182,7 @@ with tab1:
 
                 if is_flooded:
                     names = ", ".join(html.escape(r["name"]) for r in matched)
-                    st.error(f"🚨 เส้นทางนี้ผ่านพื้นที่น้ำท่วมขัง ({names}) แนะนำเปลี่ยนเส้นทางหรือเลี่ยงไปใช้เส้นทางด่วน/ถนนสายอื่น!")
+                    st.error(f"🚨 เส้นทางนี้ผ่านพื้นที่น้ำท่วมขัง ({names}) แนะนำเปลี่ยนเส้นทางหรือเลี่ยงไปใช้เส้นทางอื่น!")
                 elif matched:
                     st.warning("⚠️ เส้นทางผ่านใกล้จุดที่มีน้ำขังรอการระบาย ขับขี่ด้วยความระมัดระวัง")
                 else:
