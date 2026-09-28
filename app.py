@@ -13,7 +13,7 @@ import streamlit.components.v1 as components
 st.set_page_config(page_title="SafeRoute & Floodboard", page_icon="🌊", layout="centered")
 
 st.title("🚨 SafeRoute: เช็กเส้นทางเลี่ยงน้ำท่วม กทม.")
-st.write("ดึงจุดน้ำท่วมสดจาก Traffy Fondue อัตโนมัติ พร้อมข้อมูลสำรองจาก Google Sheet")
+st.write("ระบบตรวจสอบเส้นทางอัจฉริยะ (โหลดข้อมูลครั้งเดียว รวดเร็ว ไม่ต้องรอซ้ำ)")
 
 # ---------------------------------------------------------------------------
 # ตั้งค่า
@@ -21,7 +21,6 @@ st.write("ดึงจุดน้ำท่วมสดจาก Traffy Fondue �
 SHEET_ID = "1emYaPZT-L-zWOq5Oezr_ZPURy-LTlnzLAPA7HaUjOug"
 SHEET_GID = "0"
 SHEET_CSV_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid={SHEET_GID}"
-SHEET_REFRESH_SECONDS = 600
 
 TRAFFY_API = "https://publicapi.traffy.in.th/share/teamchadchart/search"
 FLOOD_KEYWORDS = ("ท่วม", "น้ำขัง", "น้ำรอระบาย", "ระบายน้ำ")
@@ -38,18 +37,18 @@ FLOOD_PROXIMITY_METERS = 800
 COARSE_FILTER_DEGREES = 0.08
 OSRM_URL = "https://router.project-osrm.org/route/v1/driving/{lon1},{lat1};{lon2},{lat2}?overview=full&geometries=geojson"
 
-geolocator = Nominatim(user_agent="saferoute_traffy_v2")
+geolocator = Nominatim(user_agent="saferoute_fast_cache_v3")
 
 
 # ---------------------------------------------------------------------------
-# แหล่งที่ 1: Traffy Fondue
+# โหลดข้อมูลด้วย Cache ระยะยาว (โหลดรอบแรกครั้งเดียว จบเลย)
 # ---------------------------------------------------------------------------
-@st.cache_data(ttl=600, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False)
 def load_flood_reports_traffy():
     reports = []
     try:
         for offset in (0, 1000, 2000):
-            resp = requests.get(TRAFFY_API, params={"limit": 1000, "offset": offset}, timeout=30)
+            resp = requests.get(TRAFFY_API, params={"limit": 1000, "offset": offset}, timeout=15)
             resp.raise_for_status()
             data = resp.json()
             items = data.get("results") or data.get("features") or []
@@ -85,9 +84,6 @@ def load_flood_reports_traffy():
         return []
 
 
-# ---------------------------------------------------------------------------
-# แหล่งที่ 2: Google Sheet (สำรอง)
-# ---------------------------------------------------------------------------
 def parse_sheet_rows(csv_text):
     rows = []
     reader = csv.DictReader(io.StringIO(csv_text))
@@ -119,20 +115,19 @@ def geocode_road(name, district):
     province = "นนทบุรี" if district.startswith("อำเภอ") else "กรุงเทพมหานคร"
     for q in [f"{name} {district} {province} ประเทศไทย", f"{name} {province} ประเทศไทย"]:
         try:
-            loc = geolocator.geocode(q, timeout=5)
-            time.sleep(1.1)
+            loc = geolocator.geocode(q, timeout=3)
+            time.sleep(0.5)
             if loc:
                 return (loc.latitude, loc.longitude)
         except Exception:
-            time.sleep(1.1)
             continue
     return None
 
 
-@st.cache_data(ttl=SHEET_REFRESH_SECONDS, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False)
 def load_flood_reports_sheet():
     try:
-        resp = requests.get(SHEET_CSV_URL, timeout=10)
+        resp = requests.get(SHEET_CSV_URL, timeout=8)
         resp.raise_for_status()
         resp.encoding = "utf-8"
         rows = parse_sheet_rows(resp.text)
@@ -175,14 +170,13 @@ def load_flood_reports_combined():
 
 
 # ---------------------------------------------------------------------------
-# ระบบค้นหาพิกัดสถานที่แบบยืดหยุ่น (แก้ปัญหาหาจุดไม่เจอ)
+# ค้นหาพิกัดสถานที่
 # ---------------------------------------------------------------------------
 def get_lat_lon_free(place_name):
     query = place_name.strip()
     if not query:
         return None
     
-    # เพิ่มคีย์เวิร์ดสำรองและคำพ้องความหมาย (เช่น MRT / สถานี / แยก)
     search_queries = [
         query + ", กรุงเทพมหานคร, ประเทศไทย",
         query + ", นนทบุรี, ประเทศไทย",
@@ -194,13 +188,12 @@ def get_lat_lon_free(place_name):
     
     for q in search_queries:
         try:
-            loc = geolocator.geocode(q, timeout=4)
+            loc = geolocator.geocode(q, timeout=3)
             if loc:
                 return {"lat": loc.latitude, "lon": loc.longitude}
         except Exception:
             continue
             
-    # ถ้ายังไม่เจอจริงๆ ใช้พิกัดสำรองกลางกรุงเทพฯ/นนทบุรี เพื่อให้ระบบเดินหน้าต่อได้ไม่พัง
     if "บางใหญ่" in query or "นนทบุรี" in query:
         return {"lat": 13.8749, "lon": 100.4181}
     return {"lat": 13.7563, "lon": 100.5018}
@@ -237,7 +230,7 @@ def fetch_route(loc_orig, loc_dest):
     url = OSRM_URL.format(lon1=loc_orig["lon"], lat1=loc_orig["lat"],
                           lon2=loc_dest["lon"], lat2=loc_dest["lat"])
     try:
-        response = requests.get(url, timeout=10)
+        response = requests.get(url, timeout=8)
         response.raise_for_status()
         data = response.json()
     except Exception:
@@ -251,30 +244,38 @@ def fetch_route(loc_orig, loc_dest):
 
 
 # ---------------------------------------------------------------------------
-# UI
+# UI หลัก
 # ---------------------------------------------------------------------------
 tab1, tab2, tab3 = st.tabs(["🗺️ เช็กเส้นทางปลอดภัย", "🌦️ พยากรณ์ฝนตก", "📊 Floodboard"])
 
 with tab1:
     st.subheader("วางแผนการเดินทางเลี่ยงน้ำท่วม")
 
-    with st.spinner("กำลังโหลดจุดน้ำท่วมล่าสุด..."):
-        flood_reports, info = load_flood_reports_combined()
+    # โหลดข้อมูลครั้งเดียวเก็บไว้ในแคช
+    if "cached_reports" not in st.session_state or "cached_info" not in st.session_state:
+        with st.spinner("กำลังโหลดข้อมูลจุดน้ำท่วมเข้าระบบครั้งแรก..."):
+            st.session_state.cached_reports, st.session_state.cached_info = load_flood_reports_combined()
 
-    if info["source"] == "traffy":
-        st.caption(f"🛰️ ใช้ข้อมูลสดจาก Traffy Fondue: {info['total']} จุด")
-    elif info["source"] == "sheet":
-        msg = f"📄 ใช้ข้อมูลจาก Google Sheet: {info['total']} จุด"
-        if info["skipped"]:
-            msg += f" (หาพิกัดไม่ได้ {info['skipped']} จุด)"
-        st.caption(msg)
-    else:
-        st.warning(f"⚠️ ดึงข้อมูลออนไลน์ไม่สำเร็จ ({info['error']}) — ใช้ข้อมูลสำรองในระบบแทน")
+    flood_reports = st.session_state.cached_reports
+    info = st.session_state.cached_info
 
-    if st.button("🔄 โหลดข้อมูลใหม่"):
-        load_flood_reports_traffy.clear()
-        load_flood_reports_sheet.clear()
-        st.rerun()
+    col_info, col_btn = st.columns([4, 1])
+    with col_info:
+        if info["source"] == "traffy":
+            st.caption(f"🛰️ ใช้ข้อมูลสดจาก Traffy Fondue: {info['total']} จุด (โหลดเรียบร้อย)")
+        elif info["source"] == "sheet":
+            st.caption(f"📄 ใช้ข้อมูลจาก Google Sheet: {info['total']} จุด (โหลดเรียบร้อย)")
+        else:
+            st.warning(f"⚠️ ใช้ข้อมูลสำรองในระบบ ({info['error']})")
+    with col_btn:
+        if st.button("🔄 โหลดใหม่"):
+            load_flood_reports_traffy.clear()
+            load_flood_reports_sheet.clear()
+            if "cached_reports" in st.session_state:
+                del st.session_state.cached_reports
+            if "cached_info" in st.session_state:
+                del st.session_state.cached_info
+            st.rerun()
 
     origin_input = st.text_input("📍 จุดเริ่มต้น", placeholder="เช่น MRT บางรักใหญ่")
     destination_input = st.text_input("🏁 จุดปลายทาง", placeholder="เช่น แยกพงษ์เพชร")
@@ -322,7 +323,7 @@ with tab1:
 
                 if is_flooded:
                     names = ", ".join(html.escape(r["name"]) for r in matched[:8])
-                    more = f" และอีก {len(matched) - 8} จุด" if len(matched) > 8 else ""
+                    more = f" และอีกยาวนานกว่า {len(matched) - 8} จุด" if len(matched) > 8 else ""
                     st.error(f"🚨 เส้นทางนี้ผ่านใกล้พื้นที่น้ำท่วมขัง ({names}{more}) แนะนำเปลี่ยนเส้นทาง!")
                 elif matched:
                     st.warning("⚠️ เส้นทางผ่านใกล้จุดที่มีน้ำขัง ขับขี่ด้วยความระมัดระวัง")
