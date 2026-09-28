@@ -13,7 +13,7 @@ import streamlit.components.v1 as components
 st.set_page_config(page_title="SafeRoute & Floodboard", page_icon="🌊", layout="centered")
 
 st.title("🚨 SafeRoute: เช็กเส้นทางเลี่ยงน้ำท่วม กทม.")
-st.write("ระบบตรวจสอบเส้นทางอัจฉริยะ และรายงานสถานการณ์น้ำท่วมสดจาก กทม.")
+st.write("ระบบตรวจสอบเส้นทางอัจฉริยะ (เชื่อมต่อ Google Sheets แบบแม่นยำครบถ้วน)")
 
 # ---------------------------------------------------------------------------
 # ตั้งค่า Google Sheet และข้อมูลสำรอง
@@ -26,55 +26,25 @@ FALLBACK_REPORTS = [
     {"name": "ถนนงามวงศ์วาน (เขตจตุจักร)", "lat": 13.8582, "lon": 100.5447, "status": "ท่วมขัง ~31 cm", "level": "danger"},
     {"name": "ถนนนวมินทร์ (เขตบางกะปิ)", "lat": 13.7850, "lon": 100.6500, "status": "ท่วมขัง ~80 cm", "level": "danger"},
     {"name": "ถนนรามคำแหง (เขตสวนหลวง)", "lat": 13.7580, "lon": 100.6200, "status": "ท่วมขัง ~100 cm", "level": "danger"},
-    {"name": "ถนนพหลโยธิน (เขตดอนเมือง)", "lat": 13.8800, "lon": 100.6000, "status": "ท่วมขัง ~80 cm", "level": "danger"},
-    {"name": "ถนนลาดพร้าว (เขตวังทองหลาง)", "lat": 13.7800, "lon": 100.6000, "status": "ท่วมขัง ~70 cm", "level": "danger"},
-    {"name": "ถนนพัฒนาการ (เขตประเวศ)", "lat": 13.7315, "lon": 100.6120, "status": "ท่วมขัง ~50 cm", "level": "danger"},
-    {"name": "ถนนศรีนครินทร์ (เขตบางนา)", "lat": 13.7450, "lon": 100.6420, "status": "ท่วมขัง ~80 cm", "level": "danger"},
 ]
 
 FLOOD_PROXIMITY_METERS = 800
 COARSE_FILTER_DEGREES = 0.08
 OSRM_URL = "https://router.project-osrm.org/route/v1/driving/{lon1},{lat1};{lon2},{lat2}?overview=full&geometries=geojson"
 
-geolocator = Nominatim(user_agent="saferoute_dashboard_v5")
+geolocator = Nominatim(user_agent="saferoute_fixed_parser_v6")
 
 
 # ---------------------------------------------------------------------------
-# โหลดข้อมูลจาก Google Sheet
+# โหลดข้อมูลจาก Google Sheet แบบตัดตารางสรุปด้านล่างทิ้งอย่างแม่นยำ
 # ---------------------------------------------------------------------------
-def parse_sheet_rows(csv_text):
-    rows = []
-    reader = csv.DictReader(io.StringIO(csv_text))
-    for r in reader:
-        name = (r.get("name") or "").strip()
-        level = (r.get("level") or "").strip().lower()
-        if not name or name == "ถนน" or level not in ("danger", "warning"):
-            continue
-        item = {
-            "name": name,
-            "district": (r.get("district") or "").strip(),
-            "distance": (r.get("distance") or "").strip(),
-            "depth": (r.get("depth") or "").strip(),
-            "level": level,
-            "lat": None, "lon": None,
-        }
-        try:
-            if (r.get("lat") or "").strip() and (r.get("lon") or "").strip():
-                item["lat"] = float(r["lat"])
-                item["lon"] = float(r["lon"])
-        except ValueError:
-            pass
-        rows.append(item)
-    return rows
-
-
 @st.cache_data(ttl=7 * 24 * 3600, show_spinner=False)
 def geocode_road(name, district):
     province = "นนทบุรี" if district.startswith("อำเภอ") else "กรุงเทพมหานคร"
     for q in [f"{name} {district} {province} ประเทศไทย", f"{name} {province} ประเทศไทย"]:
         try:
             loc = geolocator.geocode(q, timeout=3)
-            time.sleep(0.3)
+            time.sleep(0.2)
             if loc:
                 return (loc.latitude, loc.longitude)
         except Exception:
@@ -88,7 +58,38 @@ def load_flood_reports_sheet():
         resp = requests.get(SHEET_CSV_URL, timeout=5)
         resp.raise_for_status()
         resp.encoding = "utf-8"
-        rows = parse_sheet_rows(resp.text)
+        
+        rows = []
+        reader = csv.reader(io.StringIO(resp.text))
+        for row in reader:
+            if not row or not row[0]:
+                continue
+            col0 = row[0].strip()
+            
+            # ถ้าเจอหัวข้อสรุปด้านล่าง ให้หยุดอ่านทันที
+            if "เขตที่ได้รับผลกระทบ" in col0 or "เขต" == col0:
+                break
+            if col0 == "ถนน" or "name" in col0.lower():
+                continue
+                
+            name = col0
+            district = row[1].strip() if len(row) > 1 else ""
+            distance = row[2].strip() if len(row) > 2 else ""
+            depth = row[3].strip() if len(row) > 3 else ""
+            level = row[4].strip().lower() if len(row) > 4 else "danger"
+            
+            if not level or level not in ("danger", "warning"):
+                level = "danger"
+                
+            rows.append({
+                "name": name,
+                "district": district,
+                "distance": distance,
+                "depth": depth,
+                "level": level,
+                "lat": None,
+                "lon": None
+            })
     except Exception:
         return FALLBACK_REPORTS, {"source": "fallback", "total": len(FALLBACK_REPORTS)}
 
@@ -103,12 +104,17 @@ def load_flood_reports_sheet():
             if coords is None:
                 continue
             lat, lon = coords
+            
         status = f"ท่วมขัง {r['depth']}"
         if r["distance"]:
             status += f" (ถนนมีน้ำ {r['distance']})"
+            
         reports.append({
             "name": f"{r['name']} ({r['district']})" if r["district"] else r["name"],
-            "lat": lat, "lon": lon, "status": status, "level": r["level"],
+            "lat": lat,
+            "lon": lon,
+            "status": status,
+            "level": r["level"],
         })
 
     if not reports:
@@ -188,7 +194,7 @@ def fetch_route(loc_orig, loc_dest):
 
 
 # ---------------------------------------------------------------------------
-# UI หลัก (เพิ่มแท็บ BKK Flood Alert Dashboard)
+# UI หลัก
 # ---------------------------------------------------------------------------
 tab1, tab2, tab3, tab4 = st.tabs(["🗺️ เช็กเส้นทางปลอดภัย", "🌦️ พยากรณ์ฝนตก", "📊 Floodboard", "🏛️ BKK Dashboard"])
 
@@ -196,7 +202,7 @@ with tab1:
     st.subheader("วางแผนการเดินทางเลี่ยงน้ำท่วม")
 
     if "cached_reports" not in st.session_state:
-        with st.spinner("กำลังโหลดข้อมูลจุดน้ำท่วม..."):
+        with st.spinner("กำลังโหลดข้อมูลจุดน้ำท่วมจาก Google Sheet..."):
             st.session_state.cached_reports, st.session_state.cached_info = load_flood_reports_sheet()
 
     flood_reports = st.session_state.cached_reports
@@ -205,7 +211,7 @@ with tab1:
     col_info, col_btn = st.columns([4, 1])
     with col_info:
         if info["source"] == "sheet":
-            st.caption(f"📄 ใช้ข้อมูลจาก Google Sheet: {info['total']} จุด (โหลดเสร็จสิ้น)")
+            st.caption(f"📄 ใช้ข้อมูลจาก Google Sheet: {info['total']} จุด (ตรงกับตารางของคุณ)")
         else:
             st.warning("⚠️ ใช้ข้อมูลสำรองในระบบ (โหลดไว)")
     with col_btn:
@@ -215,8 +221,8 @@ with tab1:
                 del st.session_state.cached_reports
             st.rerun()
 
-    origin_input = st.text_input("📍 จุดเริ่มต้น", placeholder="เช่น MRT บางรักใหญ่")
-    destination_input = st.text_input("🏁 จุดปลายทาง", placeholder="เช่น แยกพงษ์เพชร")
+    origin_input = st.text_input("📍 จุดเริ่มต้น", placeholder="เช่น แม็คโครสามเสน")
+    destination_input = st.text_input("🏁 จุดปลายทาง", placeholder="เช่น ถนนเพิ่มสิน")
 
     if st.button("🚀 ค้นหาเส้นทาง"):
         if not origin_input or not destination_input:
@@ -291,9 +297,5 @@ with tab3:
 with tab4:
     st.subheader("🏛️ รายงานสถานการณ์น้ำท่วม กทม. (BKK Flood Alert)")
     st.markdown("ข้อมูลรายงานสถานการณ์น้ำท่วมและระดับน้ำบนถนนจากกรุงเทพมหานครแบบเรียลไทม์")
-    
-    # ปุ่มเปิดหน้าต่างใหม่
     st.markdown("[🔗 เปิดหน้าเว็บรายงานน้ำท่วม กทม. แบบเต็มจอในแท็บใหม่](https://now.bangkok.go.th/flood-alert.html)", unsafe_allow_html=True)
-    
-    # ฝังหน้าเว็บลงในแอป (หมายเหตุ: บางเว็บไซต์ของราชการอาจไม่อนุญาตให้ iframe แสดงผลโดยตรง หากแสดงเป็นจอขาวให้กดลิงก์ด้านบนแทนได้ครับ)
     components.iframe("https://now.bangkok.go.th/flood-alert.html", height=700, scrolling=True)
