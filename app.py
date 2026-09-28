@@ -7,13 +7,13 @@ import math
 from geopy.geocoders import Nominatim
 import streamlit.components.v1 as components
 
-st.set_page_config(page_title="SafeRoute & Floodboard Real-time", page_icon="🌊", layout="centered")
+st.set_page_config(page_title="SafeRoute & Weather", page_icon="🌊", layout="centered")
 
-st.title("🚨 SafeRoute: เช็กเส้นทางเลี่ยงน้ำท่วม กทม.")
-st.write("ระบบตรวจสอบเส้นทางอัจฉริยะ ผสานข้อมูลสถานการณ์น้ำท่วมสดและแผนที่รายงานจริง")
+st.title("🚨 SafeRoute: เช็กเส้นทางเลี่ยงน้ำท่วม & พยากรณ์ฝน")
+st.write("ระบบตรวจสอบเส้นทางอัจฉริยะ พร้อมเช็กพยากรณ์ฝนตกเพื่อเตรียมรับมือสถานการณ์ล่วงหน้า")
 
 # ---------------------------------------------------------------------------
-# ฐานข้อมูลถนนน้ำท่วมจริง อัปเดตล่าสุด
+# ฐานข้อมูลถนนน้ำท่วมจริง
 # ---------------------------------------------------------------------------
 real_flood_reports = [
     {"name": "ถนนพัฒนาการ (สวนหลวง)", "lat": 13.7315, "lon": 100.6120, "status": "ท่วมขัง ~50 ซม. (รถเล็กผ่านไม่ได้)", "level": "danger"},
@@ -24,16 +24,7 @@ real_flood_reports = [
     {"name": "ถนนศรีนครินทร์ (บางกะปิ)", "lat": 13.7450, "lon": 100.6420, "status": "ท่วมขัง ~45 ซม.", "level": "danger"},
     {"name": "ถนนรามคำแหง (บางกะปิ)", "lat": 13.7580, "lon": 100.6200, "status": "ท่วมขัง ~90 ซม. (รถเล็กห้ามผ่าน)", "level": "danger"},
     {"name": "ถนนลาดพร้าว (บางกะปิ)", "lat": 13.7800, "lon": 100.6000, "status": "ท่วมขัง ~30 ซม.", "level": "warning"},
-    {"name": "ถนนเสนานิคม 1 (จตุจักร)", "lat": 13.8320, "lon": 100.5820, "status": "ท่วมขัง ~27 ซม.", "level": "warning"},
-    {"name": "ถนนเฉลิมพระเกียรติ ร.9 (ประเวศ)", "lat": 13.6850, "lon": 100.6700, "status": "ท่วมขัง ~45 ซม.", "level": "danger"},
-    {"name": "ถนนร่มเกล้า (มีนบุรี)", "lat": 13.7900, "lon": 100.7300, "status": "ท่วมขัง ~45 ซม.", "level": "danger"},
-    {"name": "ถนนเจ้าคุณทหาร (ลาดกระบัง)", "lat": 13.7220, "lon": 100.7750, "status": "ท่วมขัง ~15 ซม.", "level": "warning"},
     {"name": "ถนนลาดกระบัง (ลาดกระบัง)", "lat": 13.7250, "lon": 100.7900, "status": "ท่วมขัง ~100 ซม. (วิกฤต)", "level": "danger"},
-    {"name": "ถนนเสรีไทย (คันนายาว)", "lat": 13.7800, "lon": 100.6750, "status": "ท่วมขัง ~30 ซม.", "level": "warning"},
-    {"name": "ถนนวัชรพล (สายไหม)", "lat": 13.8650, "lon": 100.6380, "status": "ท่วมขัง ~15 ซม.", "level": "warning"},
-    {"name": "ถนนสวนสยาม (คันนายาว)", "lat": 13.8050, "lon": 100.6850, "status": "ท่วมขัง ~80 ซม.", "level": "danger"},
-    {"name": "ถนนเชื่อมสัมพันธ์ (หนองจอก)", "lat": 13.8500, "lon": 100.8300, "status": "ท่วมขัง ~25 ซม.", "level": "warning"},
-    {"name": "ถนนเทพรักษ์ (บางเขน)", "lat": 13.8720, "lon": 100.6250, "status": "ท่วมขัง ~25 ซม.", "level": "warning"},
 ]
 
 if "flood_reports" not in st.session_state:
@@ -43,7 +34,7 @@ FLOOD_PROXIMITY_METERS = 300
 COARSE_FILTER_DEGREES = 0.03
 OSRM_URL = "https://router.project-osrm.org/route/v1/driving/{lon1},{lat1};{lon2},{lat2}?overview=full&geometries=geojson"
 
-geolocator = Nominatim(user_agent="saferoute_embed_app")
+geolocator = Nominatim(user_agent="saferoute_weather_app")
 
 def get_lat_lon_free(place_name):
     if not place_name.strip():
@@ -111,7 +102,7 @@ def fetch_route(loc_orig, loc_dest):
 # ---------------------------------------------------------------------------
 # Tabs การใช้งาน
 # ---------------------------------------------------------------------------
-tab1, tab2, tab3 = st.tabs(["🗺️ เช็กเส้นทางปลอดภัย", "📊 แผนผังสด Floodboard", "📢 แจ้งน้ำท่วม / น้ำแห้ง"])
+tab1, tab2, tab3, tab4 = st.tabs(["🗺️ เช็กเส้นทางปลอดภัย", "🌦️ พยากรณ์ฝนตก", "📊 Floodboard", "📢 แจ้งน้ำท่วม"])
 
 with tab1:
     st.subheader("วางแผนการเดินทางเลี่ยงน้ำท่วม")
@@ -122,12 +113,12 @@ with tab1:
         if not origin_input or not destination_input:
             st.warning("⚠️ กรุณากรอกข้อมูลจุดเริ่มต้นและปลายทางให้ครบถ้วน")
         else:
-            with st.spinner("กำลังคำนวณเส้นทางและตรวจสอบจุดน้ำท่วม..."):
+            with st.spinner("กำลังคำนวณเส้นทาง..."):
                 loc_orig = get_lat_lon_free(origin_input)
                 loc_dest = get_lat_lon_free(destination_input)
 
                 if not loc_orig or not loc_dest:
-                    st.error("❌ ไม่พบสถานที่ที่คุณค้นหา ลองระบุชื่อถนน แขวง หรือเขตเพิ่มเติมครับ")
+                    st.error("❌ ไม่พบสถานที่ที่คุณค้นหา ลองระบุชื่อถนนหรือเขตเพิ่มเติมครับ")
                 else:
                     route_coords, route_note = fetch_route(loc_orig, loc_dest)
                     
@@ -140,17 +131,14 @@ with tab1:
 
                     is_flooded, matched = route_passes_flood_zone(route_coords, st.session_state.flood_reports)
                     
-                    # วาดเส้นทาง
                     folium.PolyLine(route_coords, color="red" if is_flooded else "blue",
                                      weight=6, opacity=0.8).add_to(m)
 
-                    # ปักหมุด ต้นทาง - ปลายทาง
                     folium.Marker([loc_orig["lat"], loc_orig["lon"]], tooltip=f"จุดเริ่มต้น: {origin_input}",
                                    icon=folium.Icon(color="green", icon="play")).add_to(m)
                     folium.Marker([loc_dest["lat"], loc_dest["lon"]], tooltip=f"ปลายทาง: {destination_input}",
                                    icon=folium.Icon(color="red", icon="stop")).add_to(m)
 
-                    # ปักหมุดจุดน้ำท่วมจริง
                     for report in st.session_state.flood_reports:
                         safe_name = html.escape(report["name"])
                         safe_status = html.escape(report["status"])
@@ -159,7 +147,7 @@ with tab1:
                             popup=f"<b>{safe_name}</b><br>{safe_status}",
                             tooltip="จุดน้ำท่วมขัง",
                             icon=folium.Icon(color="red" if report["level"] == "danger" else "orange",
-                                              icon="warning-sign"),
+                                          icon="warning-sign"),
                         ).add_to(m)
 
                     st_folium(m, width=700, height=450, returned_objects=[])
@@ -169,21 +157,41 @@ with tab1:
 
                     if is_flooded:
                         names = ", ".join(html.escape(r["name"]) for r in matched if r["level"] == "danger")
-                        st.error(f"🚨 เส้นทางนี้ผ่านใกล้พื้นที่น้ำท่วมขังวิกฤต ({names}) แนะนำเปลี่ยนเส้นทาง!")
+                        st.error(f"🚨 เส้นทางนี้ผ่านใกล้พื้นที่น้ำท่วมขัง ({names}) แนะนำเปลี่ยนเส้นทาง!")
                     elif matched:
-                        st.warning("⚠️ เส้นทางผ่านใกล้จุดที่มีน้ำขังรอการระบาย ขับขี่ด้วยความระมัดระวัง")
+                        st.warning("⚠️ เส้นทางผ่านใกล้จุดที่มีน้ำขังรอการระบาย ระมัดระวังด้วยครับ")
                     else:
-                        st.success("✅ ไม่พบจุดเสี่ยงน้ำท่วมในเส้นทางนี้ เดินทางได้ปกติครับ")
+                        st.success("✅ ไม่พบจุดเสี่ยงน้ำท่วมในเส้นทางนี้")
 
 with tab2:
-    st.subheader("📊 แผนที่รายงานสถานการณ์น้ำท่วมสด (Floodboard)")
-    st.write("ข้อมูลภาพรวมสถานการณ์น้ำท่วมถนนและรายงานล่าสุดแบบเรียลไทม์")
+    st.subheader("🌦️ เช็กพยากรณ์ฝนและสภาพอากาศ (กรุงเทพฯ และปริมณฑล)")
+    st.write("ข้อมูลปริมาณฝนคาดการณ์แบบรายชั่วโมง เพื่อประเมินความเสี่ยงน้ำรอการระบาย")
     
-    # ฝัง iframe ของ Floodboard 
+    # ดึงข้อมูลสภาพอากาศฟรีจาก Open-Meteo (พิกัดกลางกรุงเทพฯ 13.7563, 100.5018)
+    weather_url = "https://api.open-meteo.com/v1/forecast?latitude=13.7563&longitude=100.5018&hourly=precipitation_probability,precipitation,rain&timezone=Asia%2FBangkok"
+    try:
+        w_res = requests.get(weather_url, timeout=5).json()
+        hourly = w_res.get("hourly", {})
+        times = hourly.get("time", [])[:24] # ดู 24 ชม. ข้างหน้า
+        precips = hourly.get("precipitation", [])[:24]
+        probs = hourly.get("precipitation_probability", [])[:24]
+
+        st.markdown("##### ⏱️ พยากรณ์ปริมาณฝน 24 ชั่วโมงข้างหน้า")
+        weather_data = []
+        for t, p, pr in zip(times, precips, probs):
+            hour_str = t.split("T")[-1]
+            weather_data.append({"เวลา": hour_str, "ปริมาณฝน (มม.)": p, "โอกาสฝนตก (%)": pr})
+        
+        st.dataframe(weather_data, use_container_width=True)
+    except Exception:
+        st.error("⚠️ ไม่สามารถดึงข้อมูลพยากรณ์อากาศได้ในขณะนี้")
+
+with tab3:
+    st.subheader("📊 แผนที่รายงานสถานการณ์น้ำท่วมสด (Floodboard)")
     components.iframe("https://floodboard.org/embed", height=500, scrolling=True)
     st.markdown("[🔗 เปิดดูหน้าเว็บไซต์หลักแบบเต็มจอ](https://floodboard.org/)", unsafe_allow_html=True)
 
-with tab3:
+with tab4:
     st.subheader("📢 เพิ่มจุดรายงานน้ำท่วม หรือกดยืนยันน้ำแห้ง")
     with st.form("report_form"):
         st.markdown("##### 📍 เพิ่มจุดน้ำท่วมใหม่")
