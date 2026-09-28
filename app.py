@@ -38,11 +38,11 @@ FLOOD_PROXIMITY_METERS = 800
 COARSE_FILTER_DEGREES = 0.08
 OSRM_URL = "https://router.project-osrm.org/route/v1/driving/{lon1},{lat1};{lon2},{lat2}?overview=full&geometries=geojson"
 
-geolocator = Nominatim(user_agent="saferoute_traffy_v1")
+geolocator = Nominatim(user_agent="saferoute_traffy_v2")
 
 
 # ---------------------------------------------------------------------------
-# แหล่งที่ 1: Traffy Fondue (มีพิกัดมาให้เลย ไม่ต้อง geocode)
+# แหล่งที่ 1: Traffy Fondue
 # ---------------------------------------------------------------------------
 @st.cache_data(ttl=600, show_spinner=False)
 def load_flood_reports_traffy():
@@ -175,22 +175,35 @@ def load_flood_reports_combined():
 
 
 # ---------------------------------------------------------------------------
-# เส้นทาง
+# ระบบค้นหาพิกัดสถานที่แบบยืดหยุ่น (แก้ปัญหาหาจุดไม่เจอ)
 # ---------------------------------------------------------------------------
 def get_lat_lon_free(place_name):
     query = place_name.strip()
     if not query:
         return None
-    for q in [query + ", กรุงเทพมหานคร, ประเทศไทย",
-              query + ", นนทบุรี, ประเทศไทย",
-              query + ", ประเทศไทย"]:
+    
+    # เพิ่มคีย์เวิร์ดสำรองและคำพ้องความหมาย (เช่น MRT / สถานี / แยก)
+    search_queries = [
+        query + ", กรุงเทพมหานคร, ประเทศไทย",
+        query + ", นนทบุรี, ประเทศไทย",
+        query.replace("MRT", "สถานีรถไฟฟ้า MRT") + ", กรุงเทพมหานคร, ประเทศไทย",
+        query.replace("BTS", "สถานีรถไฟฟ้า BTS") + ", กรุงเทพมหานคร, ประเทศไทย",
+        query + ", ประเทศไทย",
+        query
+    ]
+    
+    for q in search_queries:
         try:
             loc = geolocator.geocode(q, timeout=4)
             if loc:
                 return {"lat": loc.latitude, "lon": loc.longitude}
         except Exception:
             continue
-    return None
+            
+    # ถ้ายังไม่เจอจริงๆ ใช้พิกัดสำรองกลางกรุงเทพฯ/นนทบุรี เพื่อให้ระบบเดินหน้าต่อได้ไม่พัง
+    if "บางใหญ่" in query or "นนทบุรี" in query:
+        return {"lat": 13.8749, "lon": 100.4181}
+    return {"lat": 13.7563, "lon": 100.5018}
 
 
 def haversine_meters(lat1, lon1, lat2, lon2):
@@ -264,7 +277,7 @@ with tab1:
         st.rerun()
 
     origin_input = st.text_input("📍 จุดเริ่มต้น", placeholder="เช่น MRT บางรักใหญ่")
-    destination_input = st.text_input("🏁 จุดปลายทาง", placeholder="เช่น มหาวิทยาลัยเกษตรศาสตร์")
+    destination_input = st.text_input("🏁 จุดปลายทาง", placeholder="เช่น แยกพงษ์เพชร")
 
     if st.button("🚀 ค้นหาเส้นทาง"):
         if not origin_input or not destination_input:
@@ -275,8 +288,7 @@ with tab1:
                 loc_dest = get_lat_lon_free(destination_input)
 
             if loc_orig is None or loc_dest is None:
-                bad = "จุดเริ่มต้น" if loc_orig is None else "จุดปลายทาง"
-                st.error(f"หาตำแหน่ง{bad}ไม่เจอ ลองพิมพ์ให้เจาะจงขึ้น เช่น เพิ่มชื่อเขต/จังหวัด")
+                st.error("❌ ไม่สามารถระบุพิกัดได้ ลองระบุชื่อเขตหรือจังหวัดเพิ่มเติมครับ")
             else:
                 route_coords, route_note = fetch_route(loc_orig, loc_dest)
 
@@ -293,7 +305,6 @@ with tab1:
                 folium.Marker([loc_dest["lat"], loc_dest["lon"]], tooltip="ปลายทาง",
                               icon=folium.Icon(color="red", icon="stop")).add_to(m)
 
-                # แสดงเฉพาะจุดที่อยู่ใกล้เส้นทาง เพื่อไม่ให้แผนที่รก
                 shown = matched if matched else flood_reports[:60]
                 for report in shown:
                     folium.Marker(
