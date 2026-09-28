@@ -18,32 +18,43 @@ st.write("ระบบดึงข้อมูลจาก Google Sheets แล�
 # ---------------------------------------------------------------------------
 GOOGLE_SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/1emYaPZT-L-zWOq5Oezr_ZPURy-LTlnzLAPA7HaUjOug/export?format=csv"
 
-geolocator = Nominatim(user_agent="saferoute_auto_geo_app")
+geolocator = Nominatim(user_agent="saferoute_auto_geo_app_v2")
 
 @st.cache_data(ttl=60)
 def load_and_geolocate_data(url):
     try:
-        df = pd.read_csv(url)
-        # กรองเอาเฉพาะแถวที่เป็น "ถนน" หรือ "ซอย" (ตัดแถวที่เป็นสรุปรายเขตออกเพื่อความสะอาด)
-        df = df[df['name'].str.contains("ถนน|ซอย", na=False)]
+        # อ่านไฟล์ CSV โดยให้แถวแรกเป็นข้อมูลเลย (header=None) เพื่อป้องกันปัญหาชื่อหัวคอลัมน์ไม่ตรง
+        df = pd.read_csv(url, header=None)
         
         reports = []
+        # วนลูปอ่านทีละแถว
         for index, row in df.iterrows():
-            road_name = str(row["name"]).strip()
-            district = str(row["district"]).strip() if "district" in df.columns else ""
-            depth = str(row["depth"]).strip() if "depth" in df.columns else "ไม่ระบุ"
+            # ข้ามแถวแรกถ้าเป็นหัวตารางภาษาไทยหรือคำว่า 'ถนน'
+            col0_val = str(row.iloc[0]).strip()
+            if index == 0 and ("ถนน" in col0_val or "name" in col0_val.lower()):
+                continue
             
-            # กำหนดระดับความอันตรายจากความลึกคร่าวๆ
+            if not col0_val or col0_val == "nan":
+                continue
+
+            road_name = col0_val
+            district = str(row.iloc[1]).strip() if len(row) > 1 else ""
+            depth = str(row.iloc[3]).strip() if len(row) > 3 else "ไม่ระบุ"
+            
+            # กรองเฉพาะแถวที่เป็นถนนหรือซอย
+            if "ถนน" not in road_name and "ซอย" not in road_name:
+                continue
+
+            # ประเมินระดับอันตรายจากความลึก
             level = "danger" if any(x in depth for x in ["50", "60", "70", "80", "90", "100", "110", "140"]) else "warning"
             
-            # ให้ระบบช่วยค้นหาพิกัดจากชื่อถนน + เขต
+            # ค้นหาพิกัดอัตโนมัติ
             query = f"{road_name}, {district}, กรุงเทพมหานคร, ประเทศไทย"
             try:
                 loc = geolocator.geocode(query, timeout=3)
                 if loc:
                     lat, lon = loc.latitude, loc.longitude
                 else:
-                    # ถ้าหาไม่เจอ ให้ใช้พิกัดกลางกรุงเทพฯ สำรองชั่วคราว
                     lat, lon = 13.7563, 100.5018
             except Exception:
                 lat, lon = 13.7563, 100.5018
@@ -128,7 +139,6 @@ with tab1:
 
                     m = folium.Map(location=[center_lat, center_lon], zoom_start=13)
 
-                    # ตรวจสอบจุดน้ำท่วม
                     matched = []
                     danger_hit = False
                     for report in flood_reports:
