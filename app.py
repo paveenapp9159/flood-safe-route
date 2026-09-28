@@ -8,11 +8,12 @@ import csv
 import io
 import time
 from geopy.geocoders import Nominatim
+import streamlit.components.v1 as components
 
-st.set_page_config(page_title="SafeRoute - เช็กเส้นทางเลี่ยงน้ำท่วม", page_icon="🌊", layout="centered")
+st.set_page_config(page_title="SafeRoute & Floodboard", page_icon="🌊", layout="centered")
 
 st.title("🚨 SafeRoute: เช็กเส้นทางเลี่ยงน้ำท่วม กทม.")
-st.write("ระบบตรวจสอบเส้นทางจากข้อมูลซิงค์สด และพยากรณ์ฝนรายโซน")
+st.write("ระบบตรวจสอบเส้นทางซิงค์ข้อมูลจาก Google Sheets และหน้าแดชบอร์ดสถานการณ์สด")
 
 # ---------------------------------------------------------------------------
 # ตั้งค่า Google Sheet
@@ -31,7 +32,7 @@ FLOOD_PROXIMITY_METERS = 800
 COARSE_FILTER_DEGREES = 0.08
 OSRM_URL = "https://router.project-osrm.org/route/v1/driving/{lon1},{lat1};{lon2},{lat2}?overview=full&geometries=geojson"
 
-geolocator = Nominatim(user_agent="saferoute_clean_v8")
+geolocator = Nominatim(user_agent="saferoute_exact_tabs_v9")
 
 
 # ---------------------------------------------------------------------------
@@ -181,9 +182,9 @@ def fetch_route(loc_orig, loc_dest):
 
 
 # ---------------------------------------------------------------------------
-# UI หลัก (เหลือ 2 แท็บ: เช็กเส้นทาง และ พยากรณ์ฝนรายโซน)
+# UI หลัก (มี 3 แท็บ: เช็กเส้นทาง, Floodboard, BKK Dashboard ตามที่ต้องการ)
 # ---------------------------------------------------------------------------
-tab1, tab2 = st.tabs(["🗺️ เช็กเส้นทางปลอดภัย", "🌦️ พยากรณ์ฝนรายโซน"])
+tab1, tab2, tab3 = st.tabs(["🗺️ เช็กเส้นทางปลอดภัย", "📊 Floodboard", "🏛️ BKK Dashboard"])
 
 with tab1:
     st.subheader("วางแผนการเดินทางเลี่ยงน้ำท่วม")
@@ -262,37 +263,11 @@ with tab1:
                     st.success("✅ ไม่พบจุดน้ำท่วมใกล้เส้นทางนี้ (ควรเช็กข่าวก่อนออกเดินทางด้วยครับ)")
 
 with tab2:
-    st.subheader("🌦️ เช็กพยากรณ์ฝนรายโซน/เขต")
-    zone_input = st.text_input("📍 ระบุโซนหรือเขตที่ต้องการเช็ก", placeholder="เช่น เขตจตุจักร, บางเขน, ลาดพร้าว")
-    
-    if st.button("🔍 ตรวจสอบแนวโน้มฝน"):
-        target_zone = zone_input if zone_input.strip() else "กรุงเทพมหานคร"
-        loc_zone = get_lat_lon_free(target_zone)
-        
-        if not loc_zone:
-            st.error("❌ ไม่พบพิกัดของโซนที่คุณระบุ ลองพิมพ์ใหม่อีกครั้งครับ")
-        else:
-            lat, lon = loc_zone["lat"], loc_zone["lon"]
-            weather_url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&hourly=precipitation_probability,precipitation,rain&timezone=Asia%2FBangkok"
-            try:
-                w_res = requests.get(weather_url, timeout=5).json()
-                hourly = w_res.get("hourly", {})
-                times = hourly.get("time", [])[:12]  # แสดง 12 ชั่วโมงข้างหน้า
-                precips = hourly.get("precipitation", [])[:12]
-                probs = hourly.get("precipitation_probability", [])[:12]
-                
-                st.success(f"📌 ผลพยากรณ์ฝนสำหรับ: **{target_zone}**")
-                
-                weather_data = [{"เวลา": t.split("T")[-1], "ปริมาณฝน (มม.)": p, "โอกาสฝนตก (%)": f"{pr}%"}
-                                for t, p, pr in zip(times, precips, probs)]
-                st.dataframe(weather_data, use_container_width=True)
-                
-                max_prob = max(probs) if probs else 0
-                if max_prob >= 60:
-                    st.error(f"⚠️ มีโอกาสฝนตกสูงถึง {max_prob}% ในช่วงเวลานี้ ควรเตรียมร่มหรือเลี่ยงการเดินทาง")
-                elif max_prob >= 30:
-                    st.warning(f"⚡ โอกาสฝนตกปานกลางอยู่ที่ {max_prob}% ระมัดระวังท้องฟ้าด้วยครับ")
-                else:
-                    st.info(f"✅ โอกาสฝนค่อนข้างต่ำ (สูงสุด {max_prob}%) ท้องฟ้าโปร่งเป็นส่วนใหญ่")
-            except Exception:
-                st.error("⚠️ ไม่สามารถดึงข้อมูลพยากรณ์อากาศได้ในขณะนี้")
+    st.subheader("📊 แผนที่รายงานสถานการณ์น้ำท่วมสด (Floodboard)")
+    components.iframe("https://floodboard.org/embed", height=700, scrolling=True)
+
+with tab3:
+    st.subheader("🏛️ รายงานสถานการณ์น้ำท่วม กทม. (BKK Flood Alert)")
+    st.markdown("ข้อมูลรายงานสถานการณ์น้ำท่วมและระดับน้ำบนถนนจากกรุงเทพมหานครแบบเรียลไทม์")
+    st.markdown("[🔗 เปิดหน้าเว็บรายงานน้ำท่วม กทม. แบบเต็มจอในแท็บใหม่](https://now.bangkok.go.th/flood-alert.html)", unsafe_allow_html=True)
+    components.iframe("https://now.bangkok.go.th/flood-alert.html", height=700, scrolling=True)
