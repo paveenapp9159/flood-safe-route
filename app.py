@@ -11,67 +11,66 @@ import streamlit.components.v1 as components
 st.set_page_config(page_title="SafeRoute & Floodboard", page_icon="🌊", layout="centered")
 
 st.title("🚨 SafeRoute: เช็กเส้นทางเลี่ยงน้ำท่วม กทม.")
-st.write("ระบบตรวจสอบเส้นทางอัจฉริยะ พร้อมระบบดึงข้อมูลน้ำท่วมสดและระบบสำรองกันพัง")
+st.write("ระบบดึงข้อมูลจาก Google Sheets และแปลงพิกัดถนนอัตโนมัติ")
 
-# ---------------------------------------------------------------------------
-# ฐานข้อมูลสำรอง (Fallback) ป้องกันกรณีลิงก์ Google Sheets มีปัญหา
-# ---------------------------------------------------------------------------
-fallback_flood_reports = [
-    {"name": "ถนนงามวงศ์วาน (หลักสี่/นนทบุรี)", "lat": 13.8582, "lon": 100.5447, "status": "ท่วมขัง ~31 ซม.", "level": "warning"},
-    {"name": "ถนนนวมินทร์ (บางกะปิ)", "lat": 13.7850, "lon": 100.6500, "status": "ท่วมขัง ~80 ซม. (อันตราย)", "level": "danger"},
-    {"name": "ถนนพัฒนาการ (ประเวศ)", "lat": 13.7315, "lon": 100.6120, "status": "ท่วมขัง ~50 ซม.", "level": "danger"},
-    {"name": "ถนนศรีนครินทร์ (บางนา)", "lat": 13.7450, "lon": 100.6420, "status": "ท่วมขัง ~80 ซม.", "level": "danger"},
-    {"name": "ถนนรามคำแหง (สวนหลวง)", "lat": 13.7580, "lon": 100.6200, "status": "ท่วมขัง ~100 ซม. (ผ่านไม่ได้)", "level": "danger"},
-    {"name": "ถนนพหลโยธิน (ดอนเมือง)", "lat": 13.8800, "lon": 100.6000, "status": "ท่วมขัง ~80 ซม.", "level": "danger"},
-]
-
-# ลิงก์ Google Sheets CSV ของคุณ (สามารถเปลี่ยนลิงก์ได้ตลอดเวลา)
 GOOGLE_SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/1emYaPZT-L-zWOq5Oezr_ZPURy-LTlnzLAPA7HaUjOug/export?format=csv"
+geolocator = Nominatim(user_agent="saferoute_sheet_parser_v5")
 
-@st.cache_data(ttl=30)
-def load_flood_data_safe(url):
+# ใช้ st.cache_data เพื่อแปลงพิกัดครั้งเดียวแล้วจำไว้ จะได้ไม่โหลดช้าตอนกดใช้งาน
+@st.cache_data(ttl=300)
+def load_and_convert_sheet_data(url):
     try:
         df = pd.read_csv(url)
         reports = []
         for index, row in df.iterrows():
-            road_name = str(row.iloc[0]).strip()
-            if "ถนน" not in road_name and "ซอย" not in road_name:
+            # อ่านค่าตามชื่อหัวคอลัมน์ใน Google Sheets ของคุณ
+            road_name = str(row.get("name", "")).strip()
+            district = str(row.get("district", "")).strip()
+            depth = str(row.get("depth", "")).strip()
+            level_input = str(row.get("level", "warning")).strip().lower()
+
+            if not road_name or road_name == "nan" or "ถนน" not in road_name and "ซอย" not in road_name:
                 continue
-            district = str(row.iloc[1]).strip() if len(row) > 1 else ""
-            depth = str(row.iloc[3]).strip() if len(row) > 3 else "ไม่ระบุ"
-            
-            # แปลงระดับความอันตรายตามความลึก (ถ้าเกิน 50 ซม. ถือว่าอันตราย)
-            is_danger = any(x in depth for x in ["50", "60", "70", "80", "90", "100", "110", "140"])
-            level = "danger" if is_danger else "warning"
-            
-            # อ่านพิกัด ถ้าในชีตมีคอลัมน์ lat/lon ให้ดึงมาใช้ ถ้าไม่มีใช้ค่ากลางสำรอง
-            lat = float(row.iloc[5]) if len(row) > 5 and pd.notna(row.iloc[5]) else 13.7563
-            lon = float(row.iloc[6]) if len(row) > 6 and pd.notna(row.iloc[6]) else 100.5018
+
+            # แปลงชื่อถนน + เขต เป็นพิกัด Lat/Lon อัตโนมัติ
+            query = f"{road_name}, {district}, กรุงเทพมหานคร, ประเทศไทย"
+            lat, lon = None, None
+            try:
+                loc = geolocator.geocode(query, timeout=3)
+                if loc:
+                    lat, lon = loc.latitude, loc.longitude
+            except Exception:
+                pass
+
+            # ถ้าแปลงพิกัดเฉพาะเจาะจงไม่เจอ ให้ลองใช้ชื่อเขตแทน
+            if not lat or not lon:
+                try:
+                    loc = geolocator.geocode(f"{district}, กรุงเทพมหานคร, ประเทศไทย", timeout=3)
+                    if loc:
+                        lat, lon = loc.latitude, loc.longitude
+                except Exception:
+                    pass
+
+            if not lat or not lon:
+                continue
 
             reports.append({
                 "name": f"{road_name} ({district})",
                 "lat": lat,
                 "lon": lon,
                 "status": f"ท่วมขัง {depth}",
-                "level": level
+                "level": level_input if level_input in ["danger", "warning"] else "danger"
             })
-        
-        # ถ้าดึงมาแล้วว่างเปล่า ให้ใช้ชุดสำรอง
-        if not reports:
-            return fallback_flood_reports
         return reports
-    except Exception:
-        # หากเกิดข้อผิดพลาดใดๆ ใช้ชุดสำรองทันที แอปไม่พังแน่นอน
-        return fallback_flood_reports
+    except Exception as e:
+        st.error(f"เกิดข้อผิดพลาดในการโหลดข้อมูล: {e}")
+        return []
 
-# โหลดข้อมูล (พยายามดึงจาก Sheets ก่อน ถ้าไม่ได้ใช้ตัวสำรอง)
-flood_reports = load_flood_data_safe(GOOGLE_SHEET_CSV_URL)
+flood_reports = load_and_convert_sheet_data(GOOGLE_SHEET_CSV_URL)
 
 FLOOD_PROXIMITY_METERS = 800  
 COARSE_FILTER_DEGREES = 0.08
 OSRM_URL = "https://router.project-osrm.org/route/v1/driving/{lon1},{lat1};{lon2},{lat2}?overview=full&geometries=geojson"
-
-geolocator = Nominatim(user_agent="saferoute_safe_sync_app")
 
 def get_lat_lon_free(place_name):
     if not place_name.strip():
@@ -133,15 +132,12 @@ def fetch_route(loc_orig, loc_dest):
     coords = data["routes"][0]["geometry"]["coordinates"]
     return [[c[1], c[0]] for c in coords], None
 
-# ---------------------------------------------------------------------------
-# Tabs หลัก
-# ---------------------------------------------------------------------------
 tab1, tab2, tab3 = st.tabs(["🗺️ เช็กเส้นทางปลอดภัย", "🌦️ พยากรณ์ฝนตก", "📊 Floodboard"])
 
 with tab1:
     st.subheader("วางแผนการเดินทางเลี่ยงน้ำท่วม")
     origin_input = st.text_input("📍 จุดเริ่มต้น", placeholder="เช่น MRT บางรักใหญ่")
-    destination_input = st.text_input("🏁 จุดปลายทาง", placeholder="เช่น มหาวิทยาลัยเกษตรศาสตร์")
+    destination_input = st.text_input("🏁 จุดปลายทาง", placeholder="เช่น ซอยนวมินทร์")
 
     if st.button("🚀 ค้นหาเส้นทาง"):
         if not origin_input or not destination_input:
