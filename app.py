@@ -2,14 +2,14 @@ import streamlit as st
 import requests
 import streamlit.components.v1 as components
 from geopy.geocoders import Nominatim
-from datetime import datetime, timedelta
+from datetime import datetime
 
 st.set_page_config(page_title="BKK Flood & Weather Dashboard", page_icon="🌊", layout="centered")
 
 st.title("🚨 BKK Flood & Weather Dashboard")
 st.write("ศูนย์รวมข้อมูลสถานการณ์น้ำท่วมและพยากรณ์อากาศอัจฉริยะ")
 
-geolocator = Nominatim(user_agent="bkk_weather_v11")
+geolocator = Nominatim(user_agent="bkk_weather_v12")
 
 def get_lat_lon_free(place_name):
     query = place_name.strip()
@@ -61,7 +61,6 @@ with tab3:
     
     if loc_zone:
         lat, lon = loc_zone["lat"], loc_zone["lon"]
-        # ดึงข้อมูลพยากรณ์รายวันจาก Open-Meteo (จำลอง AI Weather Engine)
         weather_url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&daily=temperature_2m_max,temperature_2m_min,precipitation_sum,precipitation_probability_max,windspeed_10m_max&timezone=Asia%2FBangkok"
         
         try:
@@ -81,7 +80,6 @@ with tab3:
                 
                 st.markdown(f"📍 **ศูนย์กลาง: {target_zone}** ({lat:.2f}°N, {lon:.2f}°E) | เวลาไทย")
                 
-                # ตารางสรุป 3 วัน
                 weather_table = {
                     "รายการ": [
                         "🌦️ สภาพอากาศหลัก",
@@ -115,7 +113,6 @@ with tab3:
                 
                 st.table(weather_table)
                 
-                # กล่องสรุปสถานการณ์
                 st.markdown("### 📌 สรุปสถานการณ์ 3 วัน:")
                 st.markdown(f"- **วันนี้ ({d1}):** ปริมาณฝน {precip[0]} มม. โอกาสฝนตก **{prob[0]}%** {'→ เตรียมร่ม!' if prob[0]>50 else '→ บรรยากาศปกติ'}")
                 st.markdown(f"- **พรุ่งนี้ ({d2}):** ปริมาณฝน {precip[1]} มม. โอกาสฝนตก **{prob[1]}%**")
@@ -123,6 +120,10 @@ with tab3:
                 
                 total_rain = sum(precip)
                 st.info(f"📊 **ภาพรวม 3 วันในโซน {target_zone}:** ปริมาณฝนสะสมรวม {total_rain:.2f} มม.")
+                
+                # แสดงอ้างอิงแหล่งที่มาอย่างเป็นทางการ
+                st.markdown("---")
+                st.caption("🌐 **Reference & Data Source:** ข้อมูลพยากรณ์อากาศอ้างอิงจาก [Open-Meteo API](https://open-meteo.com/) (ประมวลผลจากโมเดลอุตุนิยมวิทยาระดับโลก NOAA และ ECMWF)")
             else:
                 st.warning("⚠️ ไม่พบข้อมูลพยากรณ์ในขณะนี้")
         except Exception:
