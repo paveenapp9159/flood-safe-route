@@ -8,15 +8,14 @@ import csv
 import io
 import time
 from geopy.geocoders import Nominatim
-import streamlit.components.v1 as components
 
-st.set_page_config(page_title="SafeRoute & Floodboard", page_icon="🌊", layout="centered")
+st.set_page_config(page_title="SafeRoute - เช็กเส้นทางเลี่ยงน้ำท่วม", page_icon="🌊", layout="centered")
 
 st.title("🚨 SafeRoute: เช็กเส้นทางเลี่ยงน้ำท่วม กทม.")
-st.write("ระบบตรวจสอบเส้นทางอัจฉริยะ (เชื่อมต่อ Google Sheets แม่นยำ ตรงตามข้อมูลจริง 100%)")
+st.write("ระบบตรวจสอบเส้นทางจากข้อมูลซิงค์สด และพยากรณ์ฝนรายโซน")
 
 # ---------------------------------------------------------------------------
-# ตั้งค่า Google Sheet และข้อมูลสำรองกันพัง
+# ตั้งค่า Google Sheet
 # ---------------------------------------------------------------------------
 SHEET_ID = "1emYaPZT-L-zWOq5Oezr_ZPURy-LTlnzLAPA7HaUjOug"
 SHEET_GID = "0"
@@ -32,20 +31,16 @@ FLOOD_PROXIMITY_METERS = 800
 COARSE_FILTER_DEGREES = 0.08
 OSRM_URL = "https://router.project-osrm.org/route/v1/driving/{lon1},{lat1};{lon2},{lat2}?overview=full&geometries=geojson"
 
-geolocator = Nominatim(user_agent="saferoute_stable_v7")
+geolocator = Nominatim(user_agent="saferoute_clean_v8")
 
 
 # ---------------------------------------------------------------------------
-# ฟังก์ชันแปลงพิกัดและจำค่าไว้ 7 วัน (ลดการยิงซ้ำ)
+# โหลดข้อมูลจาก Google Sheet
 # ---------------------------------------------------------------------------
 @st.cache_data(ttl=7 * 24 * 3600, show_spinner=False)
 def geocode_road(name, district):
     province = "นนทบุรี" if "อำเภอ" in district or "นนทบุรี" in district else "กรุงเทพมหานคร"
-    queries = [
-        f"{name} {district} {province} ประเทศไทย",
-        f"{name} {province} ประเทศไทย"
-    ]
-    for q in queries:
+    for q in [f"{name} {district} {province} ประเทศไทย", f"{name} {province} ประเทศไทย"]:
         try:
             loc = geolocator.geocode(q, timeout=3)
             time.sleep(0.2)
@@ -56,9 +51,6 @@ def geocode_road(name, district):
     return None
 
 
-# ---------------------------------------------------------------------------
-# ฟังก์ชันอ่าน Google Sheets แบบสมบูรณ์ แม่นยำ ไม่ตกหล่น
-# ---------------------------------------------------------------------------
 @st.cache_data(ttl=1800, show_spinner=False)
 def load_flood_reports_sheet():
     try:
@@ -72,13 +64,9 @@ def load_flood_reports_sheet():
         for row in reader:
             if not row or not any(row):
                 continue
-            
             col0 = row[0].strip()
-            
-            # ถ้าเจอแถวหัวข้อสรุปด้านล่าง หรือคำว่า เขตที่ได้รับผลกระทบ ให้หยุดอ่านทันที
             if "เขตที่ได้รับผลกระทบ" in col0 or "เขต" == col0:
                 break
-            # ข้ามแถวที่เป็นหัวตารางภาษาไทยหรือชื่อคอลัมน์
             if col0 == "ถนน" or "name" in col0.lower() or col0 == "":
                 continue
                 
@@ -88,14 +76,11 @@ def load_flood_reports_sheet():
             depth = row[3].strip() if len(row) > 3 else ""
             level = row[4].strip().lower() if len(row) > 4 else "danger"
             
-            # ตรวจสอบว่ามีข้อมูลความลึกหรือสถานะจริงไหม ถ้าไม่มีข้าม
             if not depth or depth == "nan":
                 continue
-                
             if level not in ("danger", "warning"):
                 level = "danger"
                 
-            # เช็กพิกัดเผื่อมีคอลัมน์ lat/lon แนบมาด้วย
             lat, lon = None, None
             try:
                 if len(row) > 6 and row[5].strip() and row[6].strip():
@@ -104,7 +89,6 @@ def load_flood_reports_sheet():
             except ValueError:
                 pass
                 
-            # ถ้าไม่มีพิกัด ให้ใช้ระบบ Geocoder แปลงจากชื่อถนนและเขต
             if lat is None or lon is None:
                 coords = geocode_road(name, district)
                 if coords is None:
@@ -125,21 +109,15 @@ def load_flood_reports_sheet():
             
         if not reports:
             return FALLBACK_REPORTS, {"source": "fallback", "total": len(FALLBACK_REPORTS)}
-            
         return reports, {"source": "sheet", "total": len(reports)}
-        
     except Exception:
         return FALLBACK_REPORTS, {"source": "fallback", "total": len(FALLBACK_REPORTS)}
 
 
-# ---------------------------------------------------------------------------
-# ระบบค้นหาพิกัดสถานที่เริ่มต้น/ปลายทางของผู้ใช้
-# ---------------------------------------------------------------------------
 def get_lat_lon_free(place_name):
     query = place_name.strip()
     if not query:
         return None
-    
     search_queries = [
         query + ", กรุงเทพมหานคร, ประเทศไทย",
         query + ", นนทบุรี, ประเทศไทย",
@@ -148,7 +126,6 @@ def get_lat_lon_free(place_name):
         query + ", ประเทศไทย",
         query
     ]
-    
     for q in search_queries:
         try:
             loc = geolocator.geocode(q, timeout=3)
@@ -156,9 +133,6 @@ def get_lat_lon_free(place_name):
                 return {"lat": loc.latitude, "lon": loc.longitude}
         except Exception:
             continue
-            
-    if "บางใหญ่" in query or "นนทบุรี" in query:
-        return {"lat": 13.8749, "lon": 100.4181}
     return {"lat": 13.7563, "lon": 100.5018}
 
 
@@ -207,14 +181,13 @@ def fetch_route(loc_orig, loc_dest):
 
 
 # ---------------------------------------------------------------------------
-# UI หลักของแอป
+# UI หลัก (เหลือ 2 แท็บ: เช็กเส้นทาง และ พยากรณ์ฝนรายโซน)
 # ---------------------------------------------------------------------------
-tab1, tab2, tab3, tab4 = st.tabs(["🗺️ เช็กเส้นทางปลอดภัย", "🌦️ พยากรณ์ฝนตก", "📊 Floodboard", "🏛️ BKK Dashboard"])
+tab1, tab2 = st.tabs(["🗺️ เช็กเส้นทางปลอดภัย", "🌦️ พยากรณ์ฝนรายโซน"])
 
 with tab1:
     st.subheader("วางแผนการเดินทางเลี่ยงน้ำท่วม")
 
-    # โหลดข้อมูลเก็บไว้ใน session state
     if "cached_reports" not in st.session_state:
         with st.spinner("กำลังโหลดข้อมูลจุดน้ำท่วมจาก Google Sheet..."):
             st.session_state.cached_reports, st.session_state.cached_info = load_flood_reports_sheet()
@@ -225,9 +198,9 @@ with tab1:
     col_info, col_btn = st.columns([4, 1])
     with col_info:
         if info["source"] == "sheet":
-            st.caption(f"📄 ใช้ข้อมูลจาก Google Sheet: โหลดสำเร็จครบถ้วน {info['total']} จุดตรงตามตาราง")
+            st.caption(f"📄 ข้อมูลจาก Google Sheet: ซิงค์สำเร็จ {info['total']} จุด")
         else:
-            st.warning("⚠️ ใช้ข้อมูลสำรองในระบบ (โหลดไว)")
+            st.warning("⚠️ ใช้ข้อมูลสำรองในระบบ")
     with col_btn:
         if st.button("🔄 โหลดใหม่"):
             load_flood_reports_sheet.clear()
@@ -289,27 +262,37 @@ with tab1:
                     st.success("✅ ไม่พบจุดน้ำท่วมใกล้เส้นทางนี้ (ควรเช็กข่าวก่อนออกเดินทางด้วยครับ)")
 
 with tab2:
-    st.subheader("🌦️ เช็กพยากรณ์ฝนและสภาพอากาศ")
-    weather_url = ("https://api.open-meteo.com/v1/forecast?latitude=13.7563&longitude=100.5018"
-                   "&hourly=precipitation_probability,precipitation,rain&timezone=Asia%2FBangkok")
-    try:
-        w_res = requests.get(weather_url, timeout=5).json()
-        hourly = w_res.get("hourly", {})
-        times = hourly.get("time", [])[:24]
-        precips = hourly.get("precipitation", [])[:24]
-        probs = hourly.get("precipitation_probability", [])[:24]
-        weather_data = [{"เวลา": t.split("T")[-1], "ปริมาณฝน (มม.)": p, "โอกาสฝนตก (%)": pr}
-                        for t, p, pr in zip(times, precips, probs)]
-        st.dataframe(weather_data, use_container_width=True)
-    except Exception:
-        st.error("⚠️ ไม่สามารถดึงข้อมูลพยากรณ์อากาศได้")
-
-with tab3:
-    st.subheader("📊 แผนที่รายงานสถานการณ์น้ำท่วมสด (Floodboard)")
-    components.iframe("https://floodboard.org/embed", height=500, scrolling=True)
-
-with tab4:
-    st.subheader("🏛️ รายงานสถานการณ์น้ำท่วม กทม. (BKK Flood Alert)")
-    st.markdown("ข้อมูลรายงานสถานการณ์น้ำท่วมและระดับน้ำบนถนนจากกรุงเทพมหานครแบบเรียลไทม์")
-    st.markdown("[🔗 เปิดหน้าเว็บรายงานน้ำท่วม กทม. แบบเต็มจอในแท็บใหม่](https://now.bangkok.go.th/flood-alert.html)", unsafe_allow_html=True)
-    components.iframe("https://now.bangkok.go.th/flood-alert.html", height=700, scrolling=True)
+    st.subheader("🌦️ เช็กพยากรณ์ฝนรายโซน/เขต")
+    zone_input = st.text_input("📍 ระบุโซนหรือเขตที่ต้องการเช็ก", placeholder="เช่น เขตจตุจักร, บางเขน, ลาดพร้าว")
+    
+    if st.button("🔍 ตรวจสอบแนวโน้มฝน"):
+        target_zone = zone_input if zone_input.strip() else "กรุงเทพมหานคร"
+        loc_zone = get_lat_lon_free(target_zone)
+        
+        if not loc_zone:
+            st.error("❌ ไม่พบพิกัดของโซนที่คุณระบุ ลองพิมพ์ใหม่อีกครั้งครับ")
+        else:
+            lat, lon = loc_zone["lat"], loc_zone["lon"]
+            weather_url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&hourly=precipitation_probability,precipitation,rain&timezone=Asia%2FBangkok"
+            try:
+                w_res = requests.get(weather_url, timeout=5).json()
+                hourly = w_res.get("hourly", {})
+                times = hourly.get("time", [])[:12]  # แสดง 12 ชั่วโมงข้างหน้า
+                precips = hourly.get("precipitation", [])[:12]
+                probs = hourly.get("precipitation_probability", [])[:12]
+                
+                st.success(f"📌 ผลพยากรณ์ฝนสำหรับ: **{target_zone}**")
+                
+                weather_data = [{"เวลา": t.split("T")[-1], "ปริมาณฝน (มม.)": p, "โอกาสฝนตก (%)": f"{pr}%"}
+                                for t, p, pr in zip(times, precips, probs)]
+                st.dataframe(weather_data, use_container_width=True)
+                
+                max_prob = max(probs) if probs else 0
+                if max_prob >= 60:
+                    st.error(f"⚠️ มีโอกาสฝนตกสูงถึง {max_prob}% ในช่วงเวลานี้ ควรเตรียมร่มหรือเลี่ยงการเดินทาง")
+                elif max_prob >= 30:
+                    st.warning(f"⚡ โอกาสฝนตกปานกลางอยู่ที่ {max_prob}% ระมัดระวังท้องฟ้าด้วยครับ")
+                else:
+                    st.info(f"✅ โอกาสฝนค่อนข้างต่ำ (สูงสุด {max_prob}%) ท้องฟ้าโปร่งเป็นส่วนใหญ่")
+            except Exception:
+                st.error("⚠️ ไม่สามารถดึงข้อมูลพยากรณ์อากาศได้ในขณะนี้")
