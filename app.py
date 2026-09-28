@@ -8,75 +8,47 @@ import pandas as pd
 from geopy.geocoders import Nominatim
 import streamlit.components.v1 as components
 
-st.set_page_config(page_title="SafeRoute & Auto-Geocoding", page_icon="🌊", layout="centered")
+st.set_page_config(page_title="SafeRoute & Google Sheets", page_icon="🌊", layout="centered")
 
-st.title("🚨 SafeRoute: เช็กเส้นทางเลี่ยงน้ำท่วม (Auto-Sync)")
-st.write("ระบบดึงข้อมูลจาก Google Sheets และแปลงชื่อถนนเป็นพิกัดบนแผนที่ให้อัตโนมัติ")
+st.title("🚨 SafeRoute: เช็กเส้นทางเลี่ยงน้ำท่วม (Google Sheets)")
+st.write("ระบบดึงข้อมูลพิกัดและสถานการณ์น้ำท่วมจาก Google Sheets โดยตรง")
 
-# ---------------------------------------------------------------------------
-# ลิงก์ CSV จาก Google Sheets ของคุณ
-# ---------------------------------------------------------------------------
 GOOGLE_SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/1emYaPZT-L-zWOq5Oezr_ZPURy-LTlnzLAPA7HaUjOug/export?format=csv"
 
-geolocator = Nominatim(user_agent="saferoute_auto_geo_app_v2")
-
-@st.cache_data(ttl=60)
-def load_and_geolocate_data(url):
+@st.cache_data(ttl=30)
+def load_flood_data(url):
     try:
-        # อ่านไฟล์ CSV โดยให้แถวแรกเป็นข้อมูลเลย (header=None) เพื่อป้องกันปัญหาชื่อหัวคอลัมน์ไม่ตรง
-        df = pd.read_csv(url, header=None)
-        
+        df = pd.read_csv(url)
         reports = []
-        # วนลูปอ่านทีละแถว
         for index, row in df.iterrows():
-            # ข้ามแถวแรกถ้าเป็นหัวตารางภาษาไทยหรือคำว่า 'ถนน'
-            col0_val = str(row.iloc[0]).strip()
-            if index == 0 and ("ถนน" in col0_val or "name" in col0_val.lower()):
-                continue
-            
-            if not col0_val or col0_val == "nan":
-                continue
-
-            road_name = col0_val
-            district = str(row.iloc[1]).strip() if len(row) > 1 else ""
-            depth = str(row.iloc[3]).strip() if len(row) > 3 else "ไม่ระบุ"
-            
-            # กรองเฉพาะแถวที่เป็นถนนหรือซอย
+            road_name = str(row.iloc[0]).strip()
             if "ถนน" not in road_name and "ซอย" not in road_name:
                 continue
-
-            # ประเมินระดับอันตรายจากความลึก
-            level = "danger" if any(x in depth for x in ["50", "60", "70", "80", "90", "100", "110", "140"]) else "warning"
-            
-            # ค้นหาพิกัดอัตโนมัติ
-            query = f"{road_name}, {district}, กรุงเทพมหานคร, ประเทศไทย"
-            try:
-                loc = geolocator.geocode(query, timeout=3)
-                if loc:
-                    lat, lon = loc.latitude, loc.longitude
-                else:
-                    lat, lon = 13.7563, 100.5018
-            except Exception:
-                lat, lon = 13.7563, 100.5018
+            district = str(row.iloc[1]).strip() if len(row) > 1 else ""
+            depth = str(row.iloc[3]).strip() if len(row) > 3 else "ไม่ระบุ"
+            level = str(row.iloc[4]).strip().lower() if len(row) > 4 else "warning"
+            lat = float(row.iloc[5]) if len(row) > 5 and pd.notna(row.iloc[5]) else 13.7563
+            lon = float(row.iloc[6]) if len(row) > 6 and pd.notna(row.iloc[6]) else 100.5018
 
             reports.append({
                 "name": f"{road_name} ({district})",
                 "lat": lat,
                 "lon": lon,
                 "status": f"ท่วมขัง {depth}",
-                "level": level
+                "level": level if level in ["danger", "warning"] else "warning"
             })
         return reports
     except Exception as e:
         st.error(f"เกิดข้อผิดพลาดในการโหลดข้อมูล: {e}")
         return []
 
-# โหลดและแปลงพิกัดอัตโนมัติ
-flood_reports = load_and_geolocate_data(GOOGLE_SHEET_CSV_URL)
+flood_reports = load_flood_data(GOOGLE_SHEET_CSV_URL)
 
 FLOOD_PROXIMITY_METERS = 400
 COARSE_FILTER_DEGREES = 0.05
 OSRM_URL = "https://router.project-osrm.org/route/v1/driving/{lon1},{lat1};{lon2},{lat2}?overview=full&geometries=geojson"
+
+geolocator = Nominatim(user_agent="saferoute_fast_app")
 
 def fetch_route(loc_orig, loc_dest):
     straight_line = [[loc_orig["lat"], loc_orig["lon"]], [loc_dest["lat"], loc_dest["lon"]]]
@@ -109,9 +81,6 @@ def get_lat_lon_free(place_name):
         pass
     return None
 
-# ---------------------------------------------------------------------------
-# Tabs การใช้งาน
-# ---------------------------------------------------------------------------
 tab1, tab2, tab3 = st.tabs(["🗺️ เช็กเส้นทางปลอดภัย", "🌦️ พยากรณ์ฝนตก", "📊 Floodboard"])
 
 with tab1:
@@ -123,7 +92,7 @@ with tab1:
         if not origin_input or not destination_input:
             st.warning("⚠️ กรุณากรอกข้อมูลจุดเริ่มต้นและปลายทางให้ครบถ้วน")
         else:
-            with st.spinner("กำลังแปลงพิกัดและคำนวณเส้นทาง..."):
+            with st.spinner("กำลังคำนวณเส้นทาง..."):
                 loc_orig = get_lat_lon_free(origin_input)
                 loc_dest = get_lat_lon_free(destination_input)
 
